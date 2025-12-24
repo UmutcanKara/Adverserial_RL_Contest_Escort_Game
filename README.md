@@ -58,7 +58,7 @@ You **do not need to fully understand PPO math** to run or modify this project.
 
 ---
 
-## Multi-Agent Setup (Important)
+## Multi-Agent Setup
 - Each team uses **one shared neural network**
 - The same model controls all 3 agents on a team
 - Agents receive **individual observations** but learn together
@@ -71,11 +71,14 @@ This naturally leads to:
 ---
 
 ## Project Structure
-|
-|── capture_escort.py # Game Environment
-|── PPO.py # PPO implementation (discrete actions)
-|── main.py # Training + evaluation script
-|── README.md # This file
+```
+.
+├── capture_escort.py   # Game Environment
+├── PPO.py              # PPO implementation (discrete actions)
+├── main.py             # Training + evaluation script
+├── README.md           # This file
+```
+
 
 
 ## Running the Project
