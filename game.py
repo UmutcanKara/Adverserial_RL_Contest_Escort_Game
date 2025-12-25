@@ -1,5 +1,6 @@
 from capture_escort import CaptureEscortEnv, CaptureEscortConfig
-from PPO import train_two_team_ppo  # assumes this returns (modelA, modelB)
+from PPO import train_two_team_ppo 
+from logger import CSVLogger
 import numpy as np
 import torch
 
@@ -63,7 +64,7 @@ if __name__ == "__main__":
     # 1) TRAIN
     model_a, model_b = train_two_team_ppo(
         env,
-        total_env_steps=500_000,
+        total_env_steps=100_000,
         rollout_steps=1024,
         gamma=0.99,
         lam=0.95,
@@ -79,6 +80,4 @@ if __name__ == "__main__":
     for r in results:
         print(r)
 
-    print("\nFirst 20 timesteps (for plotting):")
-    for row in log[:20]:
-        print(row)
+
