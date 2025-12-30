@@ -61,6 +61,9 @@ if __name__ == "__main__":
     conf = CaptureEscortConfig()
     env = CaptureEscortEnv(conf)
 
+    logger = CSVLogger(out_dir="logs", run_name="ce_discrete_train")
+    env.logger = logger
+
     # 1) TRAIN
     model_a, model_b = train_two_team_ppo(
         env,
@@ -71,13 +74,14 @@ if __name__ == "__main__":
         clip_eps=0.2,
         device="cpu",
     )
+    logger.close()
 
+    logger = CSVLogger(out_dir="logs", run_name="ce_discrete")
+    env.logger = logger
+    env.reset_logger()
+    
     # 2) PLAY + LOG DATA
     log, results = play_and_log(env, model_a, model_b, episodes=10, max_steps=conf.max_steps, device="cpu")
-
-    # 3) PRINT A FEW DATA POINTS (for quick sanity)
-    print("Episode results:")
-    for r in results:
-        print(r)
+    logger.close()
 
 

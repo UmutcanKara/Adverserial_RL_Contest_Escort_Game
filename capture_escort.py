@@ -9,6 +9,8 @@ from gymnasium import spaces
 from pettingzoo.utils.env import ParallelEnv    
 
 
+from logger import CSVLogger
+
 @dataclass
 class CaptureEscortConfig:
     width: float = 10.0
@@ -28,7 +30,7 @@ class CaptureEscortConfig:
     w = np.array([
         2.5, # payload progress
         1.0, # escorting
-        0.8, # contesting
+        0.6, # contesting
         0.2, # teamwork
         0.2 # control penalty
         ], dtype=np.float32)  # Default reward weights
@@ -87,6 +89,7 @@ class CaptureEscortEnv(ParallelEnv):
         
         self.cfg = config or CaptureEscortConfig()
         self.rng = np.random.default_rng(seed)
+        self.logger: CSVLogger = None # type: ignore
 
         # Required by pettingZoo API
         self.possible_agents = [f'teamA_{i}' for i in range(3)] + [f'teamB_{i}' for i in range(3)]
@@ -106,6 +109,7 @@ class CaptureEscortEnv(ParallelEnv):
         self.observation_spaces = {a: spaces.Box(low=-np.inf, high=np.inf, shape=(obs_shape,), seed=0, dtype=np.float32) for a in self.possible_agents  }
 
         # State
+        self._episode_idx = 0
         self._step_count = 0
         self._agent_pos = {}
         self._agent_vel = {}
@@ -127,6 +131,9 @@ class CaptureEscortEnv(ParallelEnv):
     def __init__action_spaces(self) -> None:
         self.action_spaces = {a: spaces.Discrete(5) for a in self.possible_agents}
 
+    def reset_logger(self):
+        self._step_count = 0
+        self._episode_idx = 0
     
     # PettingZoo required API 
     def reset(self, seed: Optional[int] = None, options: Optional[Dict] = None) -> tuple[dict[str, np.ndarray], dict[str, dict]]:
@@ -135,6 +142,7 @@ class CaptureEscortEnv(ParallelEnv):
         
         self.agents = list(self.possible_agents)
         self._step_count = 0
+        self._episode_idx += 1
 
         # Spawn team A on left side and team B on right side
         for i in range(3):
@@ -193,10 +201,6 @@ class CaptureEscortEnv(ParallelEnv):
         # Check for payload delivery
         winA = self._in_goal(self._payload_pos['A'], team='A')
         winB = self._in_goal(self._payload_pos['B'], team='B')
-
-        if winA or winB:
-            for a in self.agents:
-                terminated[a] = True
         
         # Compute rewards
         rewards = self._compute_rewards(winA, winB)
@@ -205,6 +209,11 @@ class CaptureEscortEnv(ParallelEnv):
         observations = {a: self.observe(a) for a in self.agents}
         infos = {a: {"payload_progress_A": self._payload_progress["A"], "payload_progress_B": self._payload_progress["B"]} for a in self.agents}
 
+        self.log_step(rewards=rewards)
+
+        if winA or winB:
+            for a in self.agents:
+                terminated[a] = True
         # Clear dead agents
         if all(terminated.values()) or all(truncated.values()):
             self.agents = []
@@ -378,6 +387,66 @@ class CaptureEscortEnv(ParallelEnv):
         target = 2.0
         return float(np.clip(1.0 - (mean_d / target), 0.0, 1.0))
 
+    def log_step(self, rewards):
+        if self.logger is None:
+            return
+        
+        progA = self._payload_progress['A']
+        progB = self._payload_progress['B']
+
+        agents_pos = self._agent_pos.copy()
+        rewards_cpy = rewards.copy()
+
+        episode = self._episode_idx
+        step = self._step_count
+
+        dA = float(self._payload_progress['A'] - self._last_payload_progress['A'])
+        dB = float(self._payload_progress['B'] - self._last_payload_progress['B'])
+
+        escA = sum(
+            (np.linalg.norm(self._agent_pos[a] - self._payload_pos["A"]) < self.cfg.escort_radius)
+            for a in self.possible_agents if a.startswith("teamA_")
+        )
+
+        escB = sum(
+            (np.linalg.norm(self._agent_pos[a] - self._payload_pos["B"]) < self.cfg.escort_radius)
+            for a in self.possible_agents if a.startswith("teamB_")
+        )
+
+        contA = sum(
+            (np.linalg.norm(self._agent_pos[a] - self._payload_pos["B"]) < self.cfg.contest_radius)
+            for a in self.possible_agents if a.startswith("teamA_")
+        ) - 1
+        contB = sum(
+            (np.linalg.norm(self._agent_pos[a] - self._payload_pos["A"]) < self.cfg.contest_radius)
+            for a in self.possible_agents if a.startswith("teamB_")
+        )
+
+        dst = {
+            "episode": episode,
+            "step": step,
+            "progA": float(progA),
+            "progB": float(progB),
+            "dA": float(dA),
+            "dB": float(dB),
+            "escA": int(escA),
+            "escB": int(escB),
+            "contA": int(contA),
+            "contB": int(contB),
+        }
+
+        for agent, p in agents_pos.items():
+            dst[f"{agent}_x"] = float(p[0])
+            dst[f"{agent}_y"] = float(p[1])
+            dst[f"{agent}_r"] = float(rewards_cpy.get(agent, 0.0))
+
+        dst["payloadA_x"] = float(self._payload_pos["A"][0])
+        dst["payloadA_y"] = float(self._payload_pos["A"][1])
+        dst["payloadB_x"] = float(self._payload_pos["B"][0])
+        dst["payloadB_y"] = float(self._payload_pos["B"][1])
+
+        self.logger.log_step(dst)
+
     def _compute_rewards(self, winA: bool, winB: bool) -> Dict[str, float]:
         # Unpack weights (use your meaning consistently)
         # w_p: progress, w_e: escort shaping, w_b: contest shaping, w_d: idle-cohesion, w_ctrl: control
@@ -432,7 +501,7 @@ class CaptureEscortEnv(ParallelEnv):
 
             # 3) Contest shaping (optional): small pull toward opponent payload
             dist_opp_payload = float(np.linalg.norm(self._agent_pos[a] - opp_payload))
-            R_contest_dense = 1.0 - float(np.clip(dist_opp_payload / 3.0, 0.0, 1.0))
+            R_contest_dense = 1.0 - float(np.clip(dist_opp_payload / 4.0, 0.0, 1.0))
 
             # 4) Dithering penalty (your “not doing anything”)
             R_dither = self.dithering_penalty(a)  # 0..~1

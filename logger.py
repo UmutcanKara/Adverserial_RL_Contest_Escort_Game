@@ -7,8 +7,7 @@ from datetime import datetime
 
 class CSVLogger:
     def __init__(self, out_dir: str = "logs", run_name: str = "run"):
-        # id = datetime.now().strftime('%Y%m%d_%H%M%S')
-        id = ''
+        id = datetime.now().strftime('%Y%m%d_%H%M%S')
         os.makedirs(out_dir, exist_ok=True)
         self.step_path = os.path.join(out_dir, f"{run_name}_{id}_steps.csv")
         self.ep_path   = os.path.join(out_dir, f"{run_name}_{id}_episodes.csv")
