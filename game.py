@@ -2,6 +2,7 @@ from capture_escort import CaptureEscortEnv, CaptureEscortConfig
 from PPO import train_two_team_ppo 
 from logger import CSVLogger
 import numpy as np
+from EA_weights import evolve_weights
 import torch
 
 
@@ -57,31 +58,31 @@ def play_and_log(env, modelA, modelB, episodes=5, max_steps=500, device="cpu"):
     return log, ep_results
 
 
-if __name__ == "__main__":
-    conf = CaptureEscortConfig()
-    env = CaptureEscortEnv(conf)
+# if __name__ == "__main__":
+#     conf = CaptureEscortConfig()
+#     env = CaptureEscortEnv(conf)
 
-    logger = CSVLogger(out_dir="logs", run_name="ce_discrete_train")
-    env.logger = logger
+#     logger = CSVLogger(out_dir="logs", run_name="ce_discrete_train")
+#     env.logger = logger
 
-    # 1) TRAIN
-    model_a, model_b = train_two_team_ppo(
-        env,
-        total_env_steps=100_000,
-        rollout_steps=1024,
-        gamma=0.99,
-        lam=0.95,
-        clip_eps=0.2,
-        device="cpu",
-    )
-    logger.close()
+#     # 1) TRAIN
+#     model_a, model_b = train_two_team_ppo(
+#         env,
+#         total_env_steps=100_000,
+#         rollout_steps=1024,
+#         gamma=0.99,
+#         lam=0.95,
+#         clip_eps=0.2,
+#         device="cpu",
+#     )
+#     logger.close()
 
-    logger = CSVLogger(out_dir="logs", run_name="ce_discrete")
-    env.logger = logger
-    env.reset_logger()
+#     logger = CSVLogger(out_dir="logs", run_name="ce_discrete")
+#     env.logger = logger
+#     env.reset_logger()
     
-    # 2) PLAY + LOG DATA
-    log, results = play_and_log(env, model_a, model_b, episodes=10, max_steps=conf.max_steps, device="cpu")
-    logger.close()
+#     # 2) PLAY + LOG DATA
+#     log, results = play_and_log(env, model_a, model_b, episodes=10, max_steps=conf.max_steps, device="cpu")
+#     logger.close()
 
 

@@ -45,7 +45,6 @@ def sample_action(model, obs, device="cpu"):
     logp = dist.log_prob(a)
     return int(a.item()), float(logp.item()), float(v.item())
 
-# def act_deterministic(model, obs, device="cpu"):
 
 def gae(rews, vals, dones, gamma=0.99, lam=0.95):
     T = len(rews)
@@ -145,7 +144,9 @@ def train_two_team_ppo(env,
                        update_epochs=10,
                        minibatch_size=256,
                        device="cpu",
-                       seed=0):
+                       seed=0,
+                       team_weights_A=None, 
+                       team_weights_B=None):
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -164,6 +165,11 @@ def train_two_team_ppo(env,
     optB = optim.Adam(modelB.parameters(), lr=lr)
 
     obs, _ = env.reset(seed=seed)
+
+    if team_weights_A is not None and team_weights_B is not None:
+        env.set_both_team_weights(team_weights_A, team_weights_B)
+
+
     steps = 0
 
     while steps < total_env_steps:
@@ -173,7 +179,7 @@ def train_two_team_ppo(env,
             actions = {}
             idxA, idxB = {}, {}
 
-            # --- Team A actions ---
+            # Team A actions 
             for a in teamA_agents:
                 act_int, logp, v = sample_action(modelA, obs[a], device=device)
                 actions[a] = act_int
@@ -181,7 +187,7 @@ def train_two_team_ppo(env,
                 idxA[a] = len(bufA.rew)
                 bufA.add(obs[a], act_int, logp, 0.0, 0.0, v)
 
-            # --- Team B actions ---
+            # Team B actions 
             for a in teamB_agents:
                 act_int, logp, v = sample_action(modelB, obs[a], device=device)
                 actions[a] = act_int
@@ -190,7 +196,7 @@ def train_two_team_ppo(env,
                 bufB.add(obs[a], act_int, logp, 0.0, 0.0, v)
             
             next_obs, rewards, terminated, truncated, infos = env.step(actions)
-            env.render()
+            # env.render()
 
             done_any = any(terminated.values()) or any(truncated.values()) or len(env.agents) == 0
 
@@ -211,7 +217,7 @@ def train_two_team_ppo(env,
             if done_any:
                 obs, _ = env.reset()
 
-        # Update both teams from their own buffers
+        # Update both team buffers
         ppo_update(modelA, optA, bufA, gamma=gamma, lam=lam, clip_eps=clip_eps,
                    vf_coef=vf_coef, ent_coef=ent_coef,
                    epochs=update_epochs, mb_size=minibatch_size, device=device)

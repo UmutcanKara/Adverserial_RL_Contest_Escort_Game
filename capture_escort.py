@@ -27,13 +27,17 @@ class CaptureEscortConfig:
     w_min: float = -10.0
     w_max: float = 10.0
 
-    w = np.array([
-        2.5, # payload progress
-        1.0, # escorting
-        0.6, # contesting
-        0.2, # teamwork
-        0.2 # control penalty
-        ], dtype=np.float32)  # Default reward weights
+    #(w_progress, w_escort, w_contest, w_idle_cohesion, w_ctrl)
+    weights_A = np.array([2.0, 1.0, 1.0, 0.1, 0.05], dtype=np.float32)
+    weights_B = np.array([2.0, 1.0, 1.0, 0.1, 0.05], dtype=np.float32)
+    
+    weight_bounds = np.array([
+        [-5.0,  10.0],   # w_progress
+        [-2.0,   5.0],   # w_escort
+        [-2.0,   5.0],   # w_contest
+        [-1.0,   2.0],   # w_idle_cohesion
+        [ 0.0,   1.0],   # w_ctrl   (usually non-negative)
+    ], dtype=np.float32)
 
     act_dir = np.array([
         [-1.0, 0.0],  # Left
@@ -98,10 +102,11 @@ class CaptureEscortEnv(ParallelEnv):
         # Reward weights for payload progress, escorting, contesting, teamwork, and control penalty
         #if reward_weights is None:
         #    reward_weights = np.array([5.0, 2.0, 1.0, -1.0, 0.01], dtype=np.float32)  # Example weights
-        reward_weights = self.cfg.w
+        self.w = {
+            "A": np.array(self.cfg.weights_A, dtype=np.float32).copy(),
+            "B": np.array(self.cfg.weights_B, dtype=np.float32).copy(),
+        }
         
-        self.w = np.clip(reward_weights.astype(np.float32), self.cfg.w_min, self.cfg.w_max)
-
         self.__init__action_spaces()
         self._dirs = self.cfg.act_dir
 
@@ -124,6 +129,14 @@ class CaptureEscortEnv(ParallelEnv):
         self._goal_B = np.array([self.cfg.width * 0.1, self.cfg.height * 0.4], dtype=np.float32)
 
         self.render_mode = 'human'  # Default
+
+    def set_team_weights(self, team: str, w: np.ndarray) -> None:
+        team = "A" if team.upper().startswith("A") else "B"
+        self.w[team] = np.array(w, dtype=np.float32).copy()
+
+    def set_both_team_weights(self, wA: np.ndarray, wB: np.ndarray) -> None:
+        self.set_team_weights("A", wA)
+        self.set_team_weights("B", wB)
 
     def action_space(self, agent) -> spaces.Space:
         return super().action_space(agent)
@@ -323,7 +336,7 @@ class CaptureEscortEnv(ParallelEnv):
         for a in self.agents:
             self._pos_hist[a].append(self._agent_pos[a].copy())
 
-    # Helper: dithering (left-right spam) = high movement but low net displacement over last K steps
+    # Helper: dithering (left-right spam) = low net displacement over last K steps (oscillatory movement)
     def dithering_penalty(self, agent: str) -> float:
         hist = self._pos_hist.get(agent, None)
         if hist is None or len(hist) < 4:
@@ -334,18 +347,16 @@ class CaptureEscortEnv(ParallelEnv):
         total_move = float(step_moves.sum())
         net_move = float(np.linalg.norm(pts[-1] - pts[0]))
 
-        # If they truly stand still => total_move small => no penalty
+        # If no-op => no penalty for dithering
         if total_move < 1e-3:
             return 0.0
 
-        # Dithering score: "wasted motion"
-        wasted = total_move - net_move  # big if zig-zagging
+        wasted = total_move - net_move  # big if zigzag
         # Penalize only if mostly wasted (ratio high)
         ratio = wasted / (total_move + 1e-8)
 
-        # Tunable thresholds
         if ratio > 0.7 and total_move > 0.5 * self.cfg.agent_max_speed:
-            return ratio  # 0..~1
+            return ratio  
         return 0.0
 
     # Helper: bounded cohesion reward for IDLE agents only (exclude escorts+contesters)
@@ -364,7 +375,6 @@ class CaptureEscortEnv(ParallelEnv):
                 escorting.add(a)
             if np.linalg.norm(self._agent_pos[a] - opp_payload) < self.cfg.contest_radius:
                 contesting.add(a)
-        # TODO: PUT ABOVE CODELINE OUTSIDE
 
         if agent in escorting or agent in contesting:
             return 0.0
@@ -448,9 +458,7 @@ class CaptureEscortEnv(ParallelEnv):
         self.logger.log_step(dst)
 
     def _compute_rewards(self, winA: bool, winB: bool) -> Dict[str, float]:
-        # Unpack weights (use your meaning consistently)
-        # w_p: progress, w_e: escort shaping, w_b: contest shaping, w_d: idle-cohesion, w_ctrl: control
-        w_p, w_e, w_b, w_d, w_ctrl = self.w
+
 
         # Terminal rewards
         termA = 1.0 if winA and not winB else (-1.0 if winB and not winA else 0.0)
@@ -462,7 +470,7 @@ class CaptureEscortEnv(ParallelEnv):
 
         rewards: Dict[str, float] = {}
 
-        # Precompute who is escorting/contesting (for exclusion logic)
+        # Who is escorting/contesting (for future computations and logging)
         escorting = set()
         contesting = set()
         for a in self.agents:
@@ -485,6 +493,9 @@ class CaptureEscortEnv(ParallelEnv):
             team = "A" if isA else "B"
             opp = "B" if isA else "A"
 
+            # w_p: progress, w_e: escort shaping, w_b: contest shaping, w_d: idle-cohesion, w_ctrl: control
+            w_p, w_e, w_b, w_d, w_ctrl = self.w[team]
+
             payload = self._payload_pos[team]
             opp_payload = self._payload_pos[opp]
 
@@ -495,31 +506,30 @@ class CaptureEscortEnv(ParallelEnv):
             # progress credit: escorts get full, non-escorts get small (so blockers still have signal)
             R_progress = dP * (1.0 if is_escort else 0.1)
 
-            # 2) Escort shaping: dense pull toward payload regardless of progress
+            # 2) Pull toward payload regardless of progress
             dist_payload = float(np.linalg.norm(self._agent_pos[a] - payload))
             R_escort_dense = 1.0 - float(np.clip(dist_payload / 3.0, 0.0, 1.0))
 
-            # 3) Contest shaping (optional): small pull toward opponent payload
+            # 3) Pull toward opponent payload
             dist_opp_payload = float(np.linalg.norm(self._agent_pos[a] - opp_payload))
             R_contest_dense = 1.0 - float(np.clip(dist_opp_payload / 4.0, 0.0, 1.0))
 
-            # 4) Dithering penalty (your “not doing anything”)
-            R_dither = self.dithering_penalty(a)  # 0..~1
+            # 4) Dithering penalty (not doing anything)
+            R_dither = self.dithering_penalty(a)
 
-            # 5) Control cost (simple, consistent)
-            speed = float(np.linalg.norm(self._agent_vel[a]) / (self.cfg.agent_max_speed + 1e-8))
-            R_ctrl = speed  # 0..~1
+            # 5) Control cost 
+            R_ctrl = float(np.linalg.norm(self._agent_vel[a]) / (self.cfg.agent_max_speed + 1e-8))
 
             # 6) Cohesion for idle agents only (excluding escorts/contesters)
             R_idle_cohesion = self.idle_cohesion(a)
 
             shaped = (
-                w_p   * R_progress +
-                w_e   * R_escort_dense +
-                w_b   * R_contest_dense +
-                w_d   * R_idle_cohesion
-                - 4.0 * R_dither          # anti-degeneracy part (Switching between 2.5-4.0 gives best results for default weights)
-                - w_ctrl * R_ctrl
+                w_p   * R_progress + 
+                w_e   * R_escort_dense + 
+                w_b   * R_contest_dense + 
+                w_d   * R_idle_cohesion 
+                - 3.0 * R_dither          # anti-degeneracy part (Switching between 2.5-4.0 gives best results for default weights)
+                - w_ctrl * R_ctrl 
             )
 
             terminal = termA if isA else termB
